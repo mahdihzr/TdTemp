@@ -1,9 +1,9 @@
 with open('readme.txt') as f:
     text = f.read()
-keyWords = ["include", "iostream", "int", "main", "cin", "cout", 
-"std", "namespace", "using","for" ]
-strings = ["Enter","Number", "A", "Please","Factorial"]
-variables= ["fact","n","i"]
+keyWords = ["include", "iostream", "math.h", "stdio.h", "main", "cin", "cout", 
+"std", "namespace", "using", "float" ]
+strings = ["Enter","Number", "A", "Please","Factorial", "SQUARE", "OF", "PRESS", "ANY", "KEY", "TO", "EXIT"]
+variables= ["n", "sqrt"]
 nums = []
 oprators = []
 symbols = []
