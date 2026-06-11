@@ -1,0 +1,14 @@
+{
+  "name": "neon-militia",
+  "version": "1.0.0",
+  "description": "NEON MILITIA — a Mini-Militia-style 2D jetpack arena shooter with LAN multiplayer and bots. Zero dependencies.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}
