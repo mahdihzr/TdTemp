@@ -82,15 +82,19 @@ app, just open the URL in the phone's browser and tap **DEPLOY** (it goes
 fullscreen and asks for landscape).
 
 - **Left thumbstick** — move. Push **up to fly** (jetpack), push **down** to fast-fall.
-  The stick is floating: it appears wherever your thumb lands in the left half.
 - **Right thumbstick** — aim. With **auto-fire** on (default), you shoot while you
-  steer it, exactly like Mini Militia. Floating, in the right half.
-- **Action buttons** (right side) — **NADE**, **MELEE**, **DASH**, **SWAP** (cycle
-  weapon), **GRAB** (replace weapon on a crate). **Tap a weapon** in the top strip
-  to switch to it directly.
+  steer it, exactly like Mini Militia.
+- Both sticks are **fixed-position** and compact, so the screen stays uncluttered.
+- **Action buttons** (right side) — **NADE**, **MELEE**, **DASH**, **GRAB** (replace a
+  weapon on a crate). **Tap a weapon** in the top strip to switch — that's how you
+  change weapons (there's no swap button).
 - **☰** (top-right) opens the menu; **≣** toggles the scoreboard.
-- In the menu: toggle **auto-fire**, switch to a **left-handed** layout, and resize
-  the controls.
+- The **minimap is hidden** on touch by default (re-enable it in the menu).
+
+**Fully customisable layout** — in the pause menu, tap **EDIT CONTROL LAYOUT**, then
+**drag any control to move it**, and **tap one + use the slider to resize it**.
+Positions and sizes are saved on the device. The menu also has **auto-fire**,
+**left-handed layout**, **show-minimap**, and an **overall size** slider.
 
 ### Keyboard + mouse (desktop)
 

@@ -492,6 +492,12 @@ setInterval(() => {
   }
   let f = mouse.down ? 1 : 0;
 
+  // while customising the layout, freeze gameplay input
+  if (touch.enabled && touch.editing) {
+    send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 0, a: Math.round(touch.lastAim * 1000) / 1000 });
+    return;
+  }
+
   // touch joysticks take over the axes they're actively driving
   if (touch.enabled) {
     const mv = touch.move, am = touch.aim, DZ = 0.30;
@@ -574,124 +580,168 @@ function cycleWeapon() {
 }
 
 /* ============================== TOUCH CONTROLS =========================== */
-/* Mini-Militia-style: left thumb = floating move/fly stick, right thumb =
-   floating aim stick with auto-fire, plus action buttons. Coexists with
-   mouse/keyboard so hybrid touch-laptops still work. */
+/* Mini-Militia-style: left thumb = move/fly stick, right thumb = aim stick with
+   auto-fire, plus action buttons. Sticks are fixed-position; every control's
+   size and position is customisable via an in-game layout editor and saved.
+   Coexists with mouse/keyboard so hybrid touch-laptops still work. */
 
 const IS_TOUCH = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
   ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
 
 function clampNum(v, a, b, dflt) { return Number.isFinite(v) ? Math.max(a, Math.min(b, v)) : dflt; }
-function makeStick() { return { active: false, bx: 0, by: 0, kx: 0, ky: 0, nx: 0, ny: 0, mag: 0 }; }
+
+// default normalised positions (right-handed) + base radii in px
+const TOUCH_DEFAULTS = {
+  move:  { x: 0.13, y: 0.74, r: 58, kind: 'stick' },
+  aim:   { x: 0.87, y: 0.74, r: 58, kind: 'stick' },
+  nade:  { x: 0.95, y: 0.30, r: 27, kind: 'btn', glyph: '✛', label: 'NADE' },
+  melee: { x: 0.95, y: 0.55, r: 27, kind: 'btn', glyph: '⚔', label: 'MELEE' },
+  dash:  { x: 0.84, y: 0.42, r: 27, kind: 'btn', glyph: '⟫', label: 'DASH' },
+  use:   { x: 0.73, y: 0.30, r: 24, kind: 'btn', glyph: '▤', label: 'GRAB' },
+  fire:  { x: 0.71, y: 0.86, r: 42, kind: 'btn', glyph: '◉', label: 'FIRE', hold: true },
+};
+
+function loadLayout() { try { return JSON.parse(localStorage.getItem('nm_layout2')) || {}; } catch (e) { return {}; } }
 
 const touch = {
   enabled: IS_TOUCH,
   autoFire: localStorage.getItem('nm_autofire') !== '0',
   lefty: localStorage.getItem('nm_lefty') === '1',
-  scale: clampNum(parseFloat(localStorage.getItem('nm_tscale')), 0.75, 1.4, 1),
-  move: makeStick(), aim: makeStick(),
+  scale: clampNum(parseFloat(localStorage.getItem('nm_tscale')), 0.7, 1.5, 1),
+  showMinimap: localStorage.getItem('nm_minimap') === '1',
+  cfg: loadLayout(),                 // per-element overrides { id: {x,y,s} }
+  move: { active: false, cx: 0, cy: 0, r: 58, kx: 0, ky: 0, nx: 0, ny: 0, mag: 0 },
+  aim:  { active: false, cx: 0, cy: 0, r: 58, kx: 0, ky: 0, nx: 0, ny: 0, mag: 0 },
   lastAim: 0, usedAim: false, fireHeld: false,
-  buttons: [], weaponHit: [],
-  active: new Map(),  // touch identifier -> { role:'move'|'aim'|'btn'|'wpn', id, slot }
-  moveZone: null, aimZone: null, stickR: 82, moveDefault: [0, 0], aimDefault: [0, 0],
+  elems: {}, editable: [], buttons: [], weaponHit: [],
+  active: new Map(),                 // touch id -> { role, id, ... }
+  editing: false, sel: 'aim', uiK: 1,
 };
 
-function touchLayout() {
-  const s = touch.scale;
-  const R = 82 * s;
-  const aimRight = !touch.lefty;            // right-handed: aim stick on the right
-  const midX = viewW * 0.5;
-  const top = viewH * 0.30;                 // keep top strip free for HUD
-  const left = { x0: 0, x1: midX, y0: top, y1: viewH };
-  const right = { x0: midX, x1: viewW, y0: top, y1: viewH };
-  touch.moveZone = aimRight ? left : right;
-  touch.aimZone = aimRight ? right : left;
-  touch.stickR = R;
-  const lowCorner = viewH - 132 * s;
-  touch.moveDefault = aimRight ? [136 * s, lowCorner] : [viewW - 136 * s, lowCorner];
-  touch.aimDefault = aimRight ? [viewW - 136 * s, lowCorner] : [136 * s, lowCorner];
+function saveLayout() { localStorage.setItem('nm_layout2', JSON.stringify(touch.cfg)); }
 
-  // action buttons live on the aim-thumb side, in the upper region (tap by
-  // reaching up), so they never collide with the floating aim stick below.
-  const colX = aimRight ? viewW - 48 * s : 48 * s;
-  const col2X = aimRight ? viewW - 134 * s : 134 * s;
-  const br = 31 * s, br2 = 28 * s;
-  const y0 = viewH * 0.30, gap = 82 * s;
-  const btns = [
-    { id: 'nade', label: 'NADE', glyph: '✛', cx: colX, cy: y0, r: br },
-    { id: 'melee', label: 'MELEE', glyph: '⚔', cx: colX, cy: y0 + gap, r: br },
-    { id: 'dash', label: 'DASH', glyph: '⟫', cx: colX, cy: y0 + gap * 2, r: br },
-    { id: 'swap', label: 'SWAP', glyph: '⟳', cx: col2X, cy: y0, r: br2 },
-    { id: 'use', label: 'GRAB', glyph: '▤', cx: col2X, cy: y0 + gap, r: br2 },
-  ];
-  if (!touch.autoFire) {
-    btns.push({ id: 'fire', label: 'FIRE', glyph: '◉', cx: aimRight ? viewW - 78 * s : 78 * s, cy: viewH - 78 * s, r: 50 * s, hold: true });
+function touchLayout() {
+  const uiK = clampNum(Math.min(viewW, viewH) / 400, 0.85, 1.8, 1) * touch.scale;
+  touch.uiK = uiK;
+  const aimRight = !touch.lefty;
+  const ids = ['move', 'aim', 'nade', 'melee', 'dash', 'use'];
+  if (!touch.autoFire) ids.push('fire');
+  touch.editable = ids;
+  touch.elems = {};
+  for (const id of ids) {
+    const d = TOUCH_DEFAULTS[id];
+    const ov = touch.cfg[id] || {};
+    const nx = ov.x != null ? ov.x : (aimRight ? d.x : 1 - d.x);
+    const ny = ov.y != null ? ov.y : d.y;
+    const s = ov.s != null ? ov.s : 1;
+    touch.elems[id] = { id, kind: d.kind, glyph: d.glyph, label: d.label, hold: d.hold, cx: nx * viewW, cy: ny * viewH, r: d.r * uiK * s, s };
   }
-  // system buttons, top-right corner
-  btns.push({ id: 'menu', glyph: '☰', cx: viewW - 28, cy: 30, r: 19, sys: true });
-  btns.push({ id: 'board', glyph: '≣', cx: viewW - 72, cy: 30, r: 19, sys: true });
-  touch.buttons = btns;
+  const m = touch.elems.move, a = touch.elems.aim;
+  touch.move.cx = m.cx; touch.move.cy = m.cy; touch.move.r = m.r;
+  touch.aim.cx = a.cx; touch.aim.cy = a.cy; touch.aim.r = a.r;
+  touch.buttons = ids.filter((id) => TOUCH_DEFAULTS[id].kind === 'btn').map((id) => touch.elems[id]);
+  // system buttons: fixed, not editable
+  touch.buttons.push({ id: 'menu', glyph: '☰', cx: viewW - 26, cy: 28, r: 18, sys: true });
+  touch.buttons.push({ id: 'board', glyph: '≣', cx: viewW - 66, cy: 28, r: 18, sys: true });
 }
 
-function inZone(x, y, z) { return z && x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1; }
+function ensureCfg(id) {
+  if (!touch.cfg[id]) {
+    const e = touch.elems[id];
+    touch.cfg[id] = { x: e.cx / viewW, y: e.cy / viewH, s: e.s || 1 };
+  }
+  return touch.cfg[id];
+}
+function setElemPos(id, nx, ny) { const c = ensureCfg(id); c.x = clampNum(nx, 0.04, 0.96, c.x); c.y = clampNum(ny, 0.07, 0.96, c.y); saveLayout(); }
+function setElemSize(id, s) { const c = ensureCfg(id); c.s = clampNum(s, 0.6, 2.0, 1); saveLayout(); }
 
 function touchHitTest(x, y) {
   touchLayout();
   for (const b of touch.buttons) {
-    const rr2 = (b.r + 10) * (b.r + 10);
-    const dx = x - b.cx, dy = y - b.cy;
+    const dx = x - b.cx, dy = y - b.cy, rr2 = (b.r + 10) * (b.r + 10);
     if (dx * dx + dy * dy <= rr2) return { role: 'btn', id: b.id, hold: !!b.hold };
   }
   for (const w of touch.weaponHit) {
     if (x >= w.x && x <= w.x + w.w && y >= w.y && y <= w.y + w.h) return { role: 'wpn', slot: w.i };
   }
-  if (inZone(x, y, touch.moveZone)) return { role: 'move' };
-  if (inZone(x, y, touch.aimZone)) return { role: 'aim' };
+  // fixed sticks: a generous circle around each base grabs it
+  const near = (st) => { const dx = x - st.cx, dy = y - st.cy, rr = st.r * 2.3; return dx * dx + dy * dy <= rr * rr; };
+  if (near(touch.move)) return { role: 'move' };
+  if (near(touch.aim)) return { role: 'aim' };
   return null;
 }
 
+// knob deflection is measured from the FIXED base centre (cx,cy)
 function updateStick(st, x, y) {
-  const R = touch.stickR;
-  let dx = x - st.bx, dy = y - st.by;
-  const mag = Math.hypot(dx, dy) || 0.0001;
+  const R = st.r;
+  const dx = x - st.cx, dy = y - st.cy;
+  const mag = Math.hypot(dx, dy) || 1e-4;
   const cl = Math.min(mag, R);
   const ux = dx / mag, uy = dy / mag;
-  st.kx = st.bx + ux * cl; st.ky = st.by + uy * cl;
-  st.nx = (ux * cl) / R; st.ny = (uy * cl) / R;
-  st.mag = cl / R;
+  st.kx = st.cx + ux * cl; st.ky = st.cy + uy * cl;
+  st.nx = (ux * cl) / R; st.ny = (uy * cl) / R; st.mag = cl / R;
 }
 
 function onTouchButton(id, down) {
   if (id === 'menu') { if (down) toggleEsc(); return; }
-  if (id === 'board') {
-    boardOpen = down ? true : false;
-    $('scorebox').classList.toggle('hidden', !boardOpen);
-    return;
-  }
+  if (id === 'board') { boardOpen = !!down; $('scorebox').classList.toggle('hidden', !boardOpen); return; }
   if (id === 'fire') { touch.fireHeld = down; return; }
   if (!down || !state.connected || escOpen) return;
   if (id === 'nade') send({ t: 'act', k: 'nade' });
   else if (id === 'melee') send({ t: 'act', k: 'melee' });
   else if (id === 'dash') send({ t: 'act', k: 'dash' });
   else if (id === 'use') send({ t: 'act', k: 'use' });
-  else if (id === 'swap') cycleWeapon();
+}
+
+/* ----- layout editor ----- */
+function pickEditable(x, y) {
+  touchLayout();
+  let best = null, bd = 1e9;
+  for (const id of touch.editable) {
+    const e = touch.elems[id];
+    const d = Math.hypot(x - e.cx, y - e.cy);
+    if (d <= e.r + 18 && d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+function enterEdit() {
+  touch.editing = true;
+  if (!touch.editable.includes(touch.sel)) touch.sel = 'aim';
+  $('editBar').classList.remove('hidden');
+  updateEditUI();
+}
+function exitEdit() { touch.editing = false; saveLayout(); $('editBar').classList.add('hidden'); }
+function resetLayout() { touch.cfg = {}; saveLayout(); updateEditUI(); }
+function updateEditUI() {
+  touchLayout();
+  const e = touch.elems[touch.sel];
+  const nm = (e && (e.label || (e.kind === 'stick' ? touch.sel.toUpperCase() : touch.sel))) || '';
+  $('editSelName').textContent = nm;
+  $('editSize').value = String(Math.round((e ? e.s : 1) * 100));
 }
 
 function handleTouchStart(t) {
+  if (touch.editing) {
+    const e = pickEditable(t.clientX, t.clientY);
+    if (e) { touch.sel = e.id; updateEditUI(); touch.active.set(t.identifier, { role: 'edit', id: e.id, ox: t.clientX - e.cx, oy: t.clientY - e.cy }); }
+    return;
+  }
   const hit = touchHitTest(t.clientX, t.clientY);
   if (!hit) return;
-  if (hit.role === 'btn') {
-    touch.active.set(t.identifier, { role: 'btn', id: hit.id });
-    onTouchButton(hit.id, true);
-  } else if (hit.role === 'wpn') {
-    touch.active.set(t.identifier, { role: 'wpn' });
-    switchSlot(hit.slot);
-  } else {
+  if (hit.role === 'btn') { touch.active.set(t.identifier, { role: 'btn', id: hit.id }); onTouchButton(hit.id, true); }
+  else if (hit.role === 'wpn') { touch.active.set(t.identifier, { role: 'wpn' }); switchSlot(hit.slot); }
+  else {
     const st = hit.role === 'move' ? touch.move : touch.aim;
     touch.active.set(t.identifier, { role: hit.role });
-    st.active = true; st.bx = t.clientX; st.by = t.clientY;
-    updateStick(st, t.clientX, t.clientY);
+    st.active = true; updateStick(st, t.clientX, t.clientY);
   }
+}
+function handleTouchMove(t) {
+  const a = touch.active.get(t.identifier);
+  if (!a) return;
+  if (a.role === 'move') updateStick(touch.move, t.clientX, t.clientY);
+  else if (a.role === 'aim') updateStick(touch.aim, t.clientX, t.clientY);
+  else if (a.role === 'edit') setElemPos(a.id, (t.clientX - a.ox) / viewW, (t.clientY - a.oy) / viewH);
 }
 function handleTouchEnd(t) {
   const a = touch.active.get(t.identifier);
@@ -704,20 +754,8 @@ function handleTouchEnd(t) {
 
 if (IS_TOUCH) {
   const tOpts = { passive: false };
-  canvas.addEventListener('touchstart', (ev) => {
-    AU.init();
-    ev.preventDefault();
-    for (const t of ev.changedTouches) handleTouchStart(t);
-  }, tOpts);
-  canvas.addEventListener('touchmove', (ev) => {
-    ev.preventDefault();
-    for (const t of ev.changedTouches) {
-      const a = touch.active.get(t.identifier);
-      if (!a) continue;
-      if (a.role === 'move') updateStick(touch.move, t.clientX, t.clientY);
-      else if (a.role === 'aim') updateStick(touch.aim, t.clientX, t.clientY);
-    }
-  }, tOpts);
+  canvas.addEventListener('touchstart', (ev) => { AU.init(); ev.preventDefault(); for (const t of ev.changedTouches) handleTouchStart(t); }, tOpts);
+  canvas.addEventListener('touchmove', (ev) => { ev.preventDefault(); for (const t of ev.changedTouches) handleTouchMove(t); }, tOpts);
   const endH = (ev) => { ev.preventDefault(); for (const t of ev.changedTouches) handleTouchEnd(t); };
   canvas.addEventListener('touchend', endH, tOpts);
   canvas.addEventListener('touchcancel', endH, tOpts);
@@ -1383,7 +1421,7 @@ function drawHUD(now, dt) {
 
   /* --- health & fuel (bottom-left on desktop; top, right of minimap on touch) --- */
   const bw = tHud ? 200 : 230;
-  const bx = tHud ? 214 : 22;
+  const bx = tHud ? (touch.showMinimap ? 214 : 18) : 22;
   const hpY = tHud ? 20 : viewH - 66;
   const fuelY = tHud ? 42 : viewH - 44;
   ctx.font = '800 13px sans-serif';
@@ -1496,8 +1534,8 @@ function drawHUD(now, dt) {
   state.killfeed = state.killfeed.filter((k) => k.t > 0);
   ctx.globalAlpha = 1;
 
-  /* --- minimap top-left --- */
-  drawMinimap();
+  /* --- minimap top-left (hidden on touch unless re-enabled in settings) --- */
+  if (!tHud || touch.showMinimap) drawMinimap();
 
   /* --- floaters --- */
   // drawn in world space — handled separately
@@ -1529,7 +1567,7 @@ function drawHUD(now, dt) {
   /* --- hitmarker + crosshair --- */
   state.hitmarkT = Math.max(0, state.hitmarkT - dt);
   state.recoilHeat = Math.max(0, state.recoilHeat - dt * 2.4);
-  if (!dead && !escOpen) {
+  if (!dead && !escOpen && !touch.editing) {
     let cx, cy;
     const touchAiming = touch.enabled && touch.usedAim;
     if (touchAiming) {
@@ -1607,27 +1645,33 @@ function bar(x, y, w, h, f, col) {
   ctx.fillRect(x, y, w * Math.max(0, Math.min(1, f)), h);
 }
 
-function drawStickGfx(st, def, col, label) {
-  const cx = st.active ? st.bx : def[0];
-  const cy = st.active ? st.by : def[1];
-  const R = touch.stickR;
-  ctx.globalAlpha = st.active ? 0.5 : 0.22;
+function drawStickGfx(st, col, label) {
+  const cx = st.cx, cy = st.cy, R = st.r;     // fixed base position
+  ctx.globalAlpha = st.active ? 0.5 : 0.24;
   ctx.lineWidth = 3;
   ctx.strokeStyle = col;
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke();
   ctx.globalAlpha = st.active ? 0.12 : 0.06;
   ctx.fillStyle = col;
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
-  // knob
+  // knob (rests at centre when idle since the base is fixed)
   const kx = st.active ? st.kx : cx, ky = st.active ? st.ky : cy;
-  ctx.globalAlpha = st.active ? 0.95 : 0.4;
+  ctx.globalAlpha = st.active ? 0.95 : 0.45;
   ctx.fillStyle = col;
-  ctx.beginPath(); ctx.arc(kx, ky, R * 0.42, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(kx, ky, R * 0.44, 0, 7); ctx.fill();
   ctx.globalAlpha = 1;
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.font = `800 ${Math.round(11 * touch.scale)}px sans-serif`;
+  ctx.font = `800 ${Math.round(10 * touch.uiK)}px sans-serif`;
   ctx.textAlign = 'center';
-  ctx.fillText(label, cx, cy + R + 16);
+  ctx.fillText(label, cx, cy + R + 14);
+}
+
+function drawSelRing(e) {
+  ctx.save();
+  ctx.strokeStyle = '#ffd34d'; ctx.lineWidth = 3; ctx.setLineDash([7, 6]);
+  ctx.globalAlpha = 0.95;
+  ctx.beginPath(); ctx.arc(e.cx, e.cy, e.r + 9, 0, 7); ctx.stroke();
+  ctx.restore();
 }
 
 function drawTouchButton(b, enabled, pressed, sub) {
@@ -1644,12 +1688,12 @@ function drawTouchButton(b, enabled, pressed, sub) {
   ctx.font = `700 ${Math.round(b.r * (b.sys ? 1.0 : 0.95))}px sans-serif`;
   ctx.fillText(b.glyph, b.cx, b.cy + 1);
   if (b.label && !b.sys) {
-    ctx.font = `700 ${Math.round(8 * touch.scale)}px sans-serif`;
+    ctx.font = `700 ${Math.max(7, Math.round(b.r * 0.3))}px sans-serif`;
     ctx.fillStyle = 'rgba(200,215,245,0.75)';
     ctx.fillText(b.label, b.cx, b.cy + b.r + 9);
   }
   if (sub) {
-    ctx.font = `800 ${Math.round(12 * touch.scale)}px sans-serif`;
+    ctx.font = `800 ${Math.max(10, Math.round(b.r * 0.45))}px sans-serif`;
     ctx.fillStyle = '#c6ff41';
     ctx.fillText(sub, b.cx + b.r * 0.7, b.cy - b.r * 0.7);
   }
@@ -1657,14 +1701,35 @@ function drawTouchButton(b, enabled, pressed, sub) {
 }
 
 function drawTouchControls() {
-  if (!touch.enabled || !R) return;
-  const me = R.players.get(state.myId);
+  if (!touch.enabled) return;
+  if (!R && !touch.editing) return;
+  const me = R ? R.players.get(state.myId) : null;
   const dead = me && (me.flags & FLAG_DEAD);
   touchLayout();
   ctx.save();
-  ctx.globalAlpha = dead ? 0.45 : 1;
-  drawStickGfx(touch.move, touch.moveDefault, '#41c7ff', 'MOVE / FLY');
-  drawStickGfx(touch.aim, touch.aimDefault, '#ff8a3c', touch.autoFire ? 'AIM · FIRE' : 'AIM');
+
+  if (touch.editing) {
+    // edit mode: dim the field, label everything, ring the selected control
+    ctx.fillStyle = 'rgba(3,6,16,0.55)';
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffd34d';
+    ctx.font = '800 15px sans-serif';
+    ctx.fillText('CUSTOMISE — drag controls to move · tap one, then use the slider to resize', viewW / 2, 26);
+    drawStickGfx(touch.move, '#41c7ff', 'MOVE / FLY');
+    drawStickGfx(touch.aim, '#ff8a3c', touch.autoFire ? 'AIM · FIRE' : 'AIM');
+    for (const b of touch.buttons) { if (!b.sys) drawTouchButton(b, true, false, ''); }
+    const sel = touch.elems[touch.sel];
+    if (sel) drawSelRing(sel);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  ctx.globalAlpha = dead ? 0.4 : 1;
+  drawStickGfx(touch.move, '#41c7ff', 'MOVE / FLY');
+  drawStickGfx(touch.aim, '#ff8a3c', touch.autoFire ? 'AIM · FIRE' : 'AIM');
   const pressed = new Set();
   for (const a of touch.active.values()) if (a.role === 'btn') pressed.add(a.id);
   for (const b of touch.buttons) {
@@ -1684,26 +1749,31 @@ function drawTouchControls() {
 }
 
 // Horizontal, tappable weapon strip for touch — top-center under the timer.
+// (Tapping a slot is how you switch weapons now that there's no SWAP button.)
 function drawWeaponsTouch(me) {
   touch.weaponHit = [];
-  const s = touch.scale;
-  const sw = 96 * s, sh = 30 * s, gap = 6 * s;
+  const s = clampNum(Math.min(viewW, viewH) / 400, 0.85, 1.5, 1);
+  const sw = 92 * s, sh = 34 * s, gap = 6 * s;
   const n = me.weapons.length;
   const totalW = n * sw + (n - 1) * gap;
   let x = viewW / 2 - totalW / 2;
-  const y = 72;
+  const y = 70;
   for (let i = 0; i < n; i++) {
     const [wt, ammo] = me.weapons[i];
     const sel = i === me.cur;
-    ctx.fillStyle = sel ? 'rgba(65,199,255,0.2)' : 'rgba(8,12,26,0.72)';
+    ctx.fillStyle = sel ? 'rgba(65,199,255,0.22)' : 'rgba(8,12,26,0.72)';
     ctx.strokeStyle = sel ? '#41c7ff' : 'rgba(90,140,230,0.35)';
     ctx.lineWidth = sel ? 2 : 1;
-    rr(x, y, sw, sh, 4); ctx.fill(); ctx.stroke();
+    rr(x, y, sw, sh, 5); ctx.fill(); ctx.stroke();
     ctx.save(); ctx.translate(x + 24 * s, y + sh / 2 + 2); drawGun(wt, 0.9 * s); ctx.restore();
     ctx.fillStyle = sel ? '#fff' : '#8fa8d8';
-    ctx.font = `800 ${Math.round(12 * s)}px sans-serif`;
+    ctx.font = `800 ${Math.round(13 * s)}px sans-serif`;
     ctx.textAlign = 'right';
-    ctx.fillText(ammo < 0 ? '∞' : String(ammo), x + sw - 8, y + sh / 2 + 4);
+    ctx.fillText(ammo < 0 ? '∞' : String(ammo), x + sw - 8, y + sh / 2 + 5);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = sel ? '#7df9ff' : '#5d6f96';
+    ctx.font = `700 ${Math.round(8 * s)}px sans-serif`;
+    ctx.fillText(String(i + 1), x + 6, y + 12);
     touch.weaponHit.push({ x, y, w: sw, h: sh, i });
     x += sw + gap;
   }
@@ -1959,15 +2029,20 @@ function deploy() {
 $('deploy').addEventListener('click', deploy);
 $('name').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') deploy(); ev.stopPropagation(); });
 
-/* touch setup: swap menu hints, reveal touch settings, wire toggles */
+/* touch setup: swap menu hints, reveal touch settings, wire toggles + editor */
 if (touch.enabled) {
   document.body.classList.add('touch');
   const ts = $('touchSettings');
   if (ts) ts.classList.remove('hidden');
-  const afc = $('optAutoFire'), lhc = $('optLefty'), tsz = $('optTouchSize');
+  const afc = $('optAutoFire'), lhc = $('optLefty'), tsz = $('optTouchSize'), mm = $('optMinimap');
   if (afc) { afc.checked = touch.autoFire; afc.addEventListener('change', () => { touch.autoFire = afc.checked; localStorage.setItem('nm_autofire', afc.checked ? '1' : '0'); }); }
   if (lhc) { lhc.checked = touch.lefty; lhc.addEventListener('change', () => { touch.lefty = lhc.checked; localStorage.setItem('nm_lefty', lhc.checked ? '1' : '0'); }); }
-  if (tsz) { tsz.value = String(Math.round(touch.scale * 100)); tsz.addEventListener('input', () => { touch.scale = clampNum(parseFloat(tsz.value) / 100, 0.75, 1.4, 1); localStorage.setItem('nm_tscale', String(touch.scale)); }); }
+  if (mm) { mm.checked = touch.showMinimap; mm.addEventListener('change', () => { touch.showMinimap = mm.checked; localStorage.setItem('nm_minimap', mm.checked ? '1' : '0'); }); }
+  if (tsz) { tsz.value = String(Math.round(touch.scale * 100)); tsz.addEventListener('input', () => { touch.scale = clampNum(parseFloat(tsz.value) / 100, 0.7, 1.5, 1); localStorage.setItem('nm_tscale', String(touch.scale)); }); }
+  $('editLayout').addEventListener('click', () => { toggleEsc(); enterEdit(); });
+  $('editDone').addEventListener('click', () => exitEdit());
+  $('editReset').addEventListener('click', () => resetLayout());
+  $('editSize').addEventListener('input', () => { setElemSize(touch.sel, parseFloat($('editSize').value) / 100); });
 }
 
 $('resume').addEventListener('click', () => toggleEsc());
