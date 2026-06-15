@@ -48,16 +48,23 @@ node server.js --port 3000 --map foundry --mode ffa --bots 3 --diff 1 --score 25
 | `--diff` | 0–2 | bot skill: recruit / soldier / veteran |
 | `--score` | 5–100 | kills to win |
 | `--time` | 2–30 | round length, minutes |
+| `--grav` | 30–200 | gravity, percent of normal |
 
 The first human to join is the **host** (★) and can change all of this live
-from the in-game menu (`ESC` → Host Controls).
+from the in-game menu (`ESC` → Host Controls), including **gravity**.
 
 ## The game
 
 - **Jetpack movement** — hold to fly, fuel drains and regenerates; fast-fall, and a
   **dash** with a cooldown. Rocket-jumping works (self-splash is reduced, knockback isn't).
+- **Adjustable gravity** — the host can dial gravity from floaty moon-jumps to heavy,
+  changing how everyone flies and falls (live, no restart).
 - **6 weapons** — pistol (infinite), SMG, shotgun, rifle, sniper, rocket launcher —
   carried 3 at a time, picked up around the map, each with its own feel, recoil and tracers.
+- **Dual-wield** — light weapons (pistol, SMG, rifle) are held in **both hands** and
+  fire two barrels at once for double output (one swap slot). Heavy guns stay single.
+- **Smart camera** — zooms out for longer-range weapons (3 tiers), so a sniper sees
+  much more of the field than a pistol.
 - **Grenades** that bounce and cook, **melee** with lunge knockback (boot people into the lava).
 - **3 maps** — FOUNDRY (industrial, lava pit), SKYLINE (rooftops over a bottomless void),
   CAVERN (enclosed tunnels). Map hazards kill; the last person who hit you gets the credit.
@@ -91,10 +98,11 @@ fullscreen and asks for landscape).
 - **☰** (top-right) opens the menu; **≣** toggles the scoreboard.
 - The **minimap is hidden** on touch by default (re-enable it in the menu).
 
-**Fully customisable layout** — in the pause menu, tap **EDIT CONTROL LAYOUT**, then
-**drag any control to move it**, and **tap one + use the slider to resize it**.
-Positions and sizes are saved on the device. The menu also has **auto-fire**,
-**left-handed layout**, **show-minimap**, and an **overall size** slider.
+**Fully customisable layout** — open settings from the **main menu** (⚙ SETTINGS &
+CONTROLS) *or* in-game (☰ → EDIT CONTROL LAYOUT), then **drag any control to move it**
+and **tap one + use the slider to resize it**. Positions and sizes are saved on the
+device. Settings also include **auto-fire**, **left-handed layout**, **show-minimap**,
+and an **overall size** slider — all reachable before you even deploy.
 
 ### Keyboard + mouse (desktop)
 

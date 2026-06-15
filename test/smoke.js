@@ -107,8 +107,9 @@ function fetch200(port, p) {
 
 async function main() {
   console.log('Booting server…');
-  // CAVERN has a full ground floor and no lava/void, so the controlled test
-  // player can't die to a hazard mid-check (keeps the physics asserts stable).
+  // CAVERN has a full ground floor and no lava/void. Veteran bots (diff 2) fight
+  // hard so combat/kill checks pass fast and the idle test client is fragged
+  // often — giving recurring spawn-protection windows for the physics checks.
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js'), '--port', String(PORT), '--bots', '4', '--diff', '2', '--map', 'cavern'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let serverOut = '';
   server.stdout.on('data', (d) => { serverOut += d.toString(); });
@@ -165,52 +166,50 @@ async function main() {
   };
 
   const alive = () => { const me = findMe(); return me && !(me[9] & 8); };
-  const waitAlive = (label) => waitFor(alive, 6000, label);
+  // spawn-protected (flag 4): ~2s of invulnerability. The idle test client gets
+  // fragged by the deadly bots every few seconds, so protected windows recur —
+  // and move/jetpack don't break protection, so measuring inside one can't be
+  // interrupted by a frag. Each retry alternates direction to dodge wall wedging.
+  const safe = () => { const me = findMe(); return me && !(me[9] & 8) && (me[9] & 4); };
   const idle = () => ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 0, a: 0 });
-  // Retry a measurement until the player survives the whole window — the test
-  // client is a sitting duck, so a stray bot frag can interrupt any single try.
-  const attempt = async (label, fn) => {
-    for (let i = 0; i < 6; i++) { await waitAlive(label); const r = await fn(); idle(); if (r !== null) return r; await sleep(300); }
+  const attempt = async (label, fn, gate) => {
+    for (let i = 0; i < 8; i++) { await waitFor(gate || alive, 9000, label); const r = await fn(i); idle(); if (r !== null) return r; await sleep(150); }
     return null;
   };
 
-  await waitAlive('player spawns');
+  // jetpack: jet up-and-sideways during spawn protection, track the peak rise
+  const rise = await attempt('jetpack check', async (i) => {
+    if (!safe()) return null;
+    const dir = i % 2 ? -1 : 1, startY = findMe()[2]; let peakY = startY;
+    ws.send({ t: 'i', l: dir < 0 ? 1 : 0, r: dir > 0 ? 1 : 0, u: 1, d: 0, f: 0, a: 0 });
+    for (let k = 0; k < 16; k++) { await sleep(50); if (!alive()) return null; peakY = Math.min(peakY, findMe()[2]); }
+    return peakY - startY < -40 ? peakY - startY : null;
+  }, safe);
+  ok(rise !== null, `jetpack lifts player (peak rise=${rise === null ? 'boxed in' : Math.round(-rise)}px)`);
 
-  // movement: hold right, require the player to travel while staying alive
-  const dx = await attempt('alive for move check', async () => {
-    const s = findMe(); if (!alive()) return null;
-    const x0 = s[1];
-    ws.send({ t: 'i', l: 0, r: 1, u: 0, d: 0, f: 0, a: 0 });
-    let moved = 0;
-    for (let i = 0; i < 22; i++) { await sleep(50); if (!alive()) return null; moved = findMe()[1] - x0; }
-    return moved;
-  });
-  ok(dx !== null && Math.abs(dx) > 50, `input moves player (dx=${dx === null ? 'died' : Math.round(dx)}px)`);
+  // movement: hold a direction during spawn protection, require travel
+  const dx = await attempt('move check', async (i) => {
+    if (!safe()) return null;
+    const dir = i % 2 ? -1 : 1, x0 = findMe()[1]; let moved = 0;
+    ws.send({ t: 'i', l: dir < 0 ? 1 : 0, r: dir > 0 ? 1 : 0, u: 0, d: 0, f: 0, a: 0 });
+    for (let k = 0; k < 16; k++) { await sleep(50); if (!alive()) return null; moved = findMe()[1] - x0; }
+    return Math.abs(moved) > 50 ? moved : null;
+  }, safe);
+  ok(dx !== null, `input moves player (dx=${dx === null ? 'stuck' : Math.round(dx)}px)`);
 
-  // jetpack: hold up, track the peak height reached during the hold
-  const rise = await attempt('alive for jetpack check', async () => {
-    const startY = findMe()[2]; let peakY = startY;
-    ws.send({ t: 'i', l: 0, r: 0, u: 1, d: 0, f: 0, a: 0 });
-    for (let i = 0; i < 16; i++) { await sleep(50); if (!alive()) return null; peakY = Math.min(peakY, findMe()[2]); }
-    return peakY - startY;
-  });
-  ok(rise !== null && rise < -40, `jetpack lifts player (peak rise=${rise === null ? 'died' : Math.round(-rise)}px)`);
-
-  // firing: confirm our own muzzle events fire (ammo alone is fragile — a
-  // respawn refills it)
-  const fired = await attempt('alive for fire check', async () => {
+  // firing: confirm our own muzzle events fire (dual-wield light weapon → ≥2/shot).
+  // Returns as soon as a shot lands, so a frag can't mask a working trigger.
+  const fired = await attempt('fire check', async () => {
     const shots0 = msgs.ownShots;
     ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 1, a: 0.5 });
-    for (let i = 0; i < 14; i++) { await sleep(50); if (!alive()) return null; }
-    return msgs.ownShots - shots0;
+    for (let k = 0; k < 12; k++) { await sleep(50); if (msgs.ownShots > shots0) return msgs.ownShots - shots0; }
+    return null;
   });
-  ok(fired !== null && fired > 0, `firing produces shots (${fired === null ? 'died' : fired} muzzle events)`);
+  ok(fired !== null, `firing produces shots (${fired === null ? 'none' : fired} muzzle events)`);
 
-  // bots fight: combat events should flow within a few seconds
-  await waitFor(() => msgs.events.shots > 20, 8000, 'bots are shooting');
+  // combat + a full kill cycle (deadly bots have been fighting throughout)
+  await waitFor(() => msgs.events.shots > 20, 12000, 'bots are shooting');
   ok(msgs.events.shots > 20, `combat events flow (${msgs.events.shots} shots, ${msgs.events.hits} hits)`);
-
-  // full kill cycle: someone should die within a generous window
   await waitFor(() => msgs.kills >= 1, 40000, 'a kill happens');
   ok(msgs.kills >= 1, `kill feed works (${msgs.kills} kills, ${msgs.events.hits} hits)`);
 

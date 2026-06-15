@@ -86,13 +86,15 @@ const SELF_SPLASH = 0.55;       // self damage factor for explosions
 const MAX_PLAYERS = 12;
 
 const WEAPONS = [
-  { n: 'PISTOL',  dmg: 13,  int: 0.23,  spd: 1000, spread: 0.020, ammo: -1, pick: 0,  max: -1,  pellets: 1, life: 1.00, knock: 90,  kick: 30,  auto: false },
-  { n: 'SMG',     dmg: 8,   int: 0.082, spd: 1050, spread: 0.070, ammo: 45, pick: 45, max: 135, pellets: 1, life: 0.85, knock: 60,  kick: 18,  auto: true  },
+  { n: 'PISTOL',  dmg: 13,  int: 0.23,  spd: 1000, spread: 0.020, ammo: -1, pick: 0,  max: -1,  pellets: 1, life: 1.00, knock: 90,  kick: 30,  auto: false, light: true },
+  { n: 'SMG',     dmg: 8,   int: 0.082, spd: 1050, spread: 0.070, ammo: 45, pick: 45, max: 135, pellets: 1, life: 0.85, knock: 60,  kick: 18,  auto: true,  light: true },
   { n: 'SHOTGUN', dmg: 7.5, int: 0.95,  spd: 880,  spread: 0.150, ammo: 10, pick: 10, max: 30,  pellets: 8, life: 0.50, knock: 110, kick: 330, auto: false },
-  { n: 'RIFLE',   dmg: 14,  int: 0.13,  spd: 1250, spread: 0.028, ammo: 36, pick: 36, max: 108, pellets: 1, life: 1.10, knock: 90,  kick: 45,  auto: true  },
+  { n: 'RIFLE',   dmg: 14,  int: 0.13,  spd: 1250, spread: 0.028, ammo: 36, pick: 36, max: 108, pellets: 1, life: 1.10, knock: 90,  kick: 45,  auto: true,  light: true },
   { n: 'SNIPER',  dmg: 72,  int: 1.35,  spd: 2200, spread: 0.002, ammo: 7,  pick: 7,  max: 21,  pellets: 1, life: 1.20, knock: 340, kick: 280, auto: false },
   { n: 'ROCKET',  dmg: 0,   int: 1.20,  spd: 580,  spread: 0.012, ammo: 5,  pick: 5,  max: 15,  pellets: 1, life: 3.00, knock: 0,   kick: 160, auto: false, rocket: true, splash: 100, sdmg: 80 },
 ];
+// "Light" weapons are dual-wielded (akimbo) — the player holds and fires two,
+// firing from both hands at once and consuming two rounds per trigger pull.
 
 // item types: 0..5 weapon of that id, 10 medkit, 11 grenade pack
 const ITEM_RESPAWN = { weapon: 12, med: 14, nades: 16 };
@@ -324,6 +326,7 @@ const game = {
   timeLimit: 8,                // minutes
   botTarget: 3,
   botDiff: 1,                  // 0 easy, 1 normal, 2 hard
+  gravityMul: 1,               // host-adjustable gravity multiplier
   state: 0,                    // 0 playing, 1 intermission
   tl: 0,                       // time left (s) — intermission countdown when state=1
   ta: 0, tb: 0,                // team scores
@@ -494,23 +497,32 @@ function fireWeapon(p) {
     p.fireT = 0.3;
     return;
   }
-  if (w.ammo > 0) w.ammo--;
+  // light weapons are dual-wielded: fire both hands, one round each
+  let barrels = 1;
+  if (spec.light) barrels = w.ammo < 0 ? 2 : Math.min(2, w.ammo);
+  if (w.ammo > 0) w.ammo -= barrels;
   p.fireT = spec.int;
   p.protT = 0;
   const aim = p.aim;
-  const mx = p.x + Math.cos(aim) * 26, my = p.y - 6 + Math.sin(aim) * 26;
-  for (let i = 0; i < spec.pellets; i++) {
-    const a = aim + (Math.random() - 0.5) * 2 * spec.spread;
-    game.bullets.push({
-      id: nextShotId++, t: w.t, owner: p.id, team: p.team,
-      x: mx, y: my, vx: Math.cos(a) * spec.spd, vy: Math.sin(a) * spec.spd,
-      life: spec.life,
-    });
+  const perpX = -Math.sin(aim), perpY = Math.cos(aim);   // hand-offset direction
+  for (let h = 0; h < barrels; h++) {
+    const off = barrels === 2 ? (h === 0 ? -9 : 9) : 0;
+    const mx = p.x + Math.cos(aim) * 24 + perpX * off;
+    const my = p.y - 6 + Math.sin(aim) * 24 + perpY * off;
+    for (let i = 0; i < spec.pellets; i++) {
+      const a = aim + (Math.random() - 0.5) * 2 * spec.spread;
+      game.bullets.push({
+        id: nextShotId++, t: w.t, owner: p.id, team: p.team,
+        x: mx, y: my, vx: Math.cos(a) * spec.spd, vy: Math.sin(a) * spec.spd,
+        life: spec.life,
+      });
+    }
+    game.events.push([0, Math.round(mx), Math.round(my), Math.round(aim * 100) / 100, w.t, p.id]);
   }
-  // recoil kick
-  p.vx -= Math.cos(aim) * spec.kick;
-  p.vy -= Math.sin(aim) * spec.kick * 0.6;
-  game.events.push([0, Math.round(mx), Math.round(my), Math.round(aim * 100) / 100, w.t, p.id]);
+  // recoil kick (a touch stronger when dual-wielding)
+  const kick = spec.kick * (barrels === 2 ? 1.4 : 1);
+  p.vx -= Math.cos(aim) * kick;
+  p.vy -= Math.sin(aim) * kick * 0.6;
   if (w.ammo === 0) autoSwitch(p);
 }
 
@@ -616,7 +628,7 @@ function stepPlayer(p, dt) {
   }
 
   // gravity & fast fall
-  p.vy += GRAV * dt;
+  p.vy += GRAV * game.gravityMul * dt;
   if (inp.d && !p.grounded) p.vy += FASTFALL_ACC * dt;
   const cap = inp.d ? FASTFALL_CAP : FALL_CAP;
   if (p.vy > cap) p.vy = cap;
@@ -711,7 +723,7 @@ function stepNades(dt) {
       game.nades.splice(i, 1);
       continue;
     }
-    g.vy += GRAV * 0.9 * dt;
+    g.vy += GRAV * 0.9 * game.gravityMul * dt;
     const hw = 6;
     g.x += g.vx * dt;
     for (const r of rects) {
@@ -1172,9 +1184,11 @@ function applyHostSettings(set, host) {
   if (set.diff !== undefined) game.botDiff = clamp(set.diff | 0, 0, 2);
   if (set.score !== undefined) game.scoreLimit = clamp(set.score | 0, 5, 100);
   if (set.time !== undefined) game.timeLimit = clamp(set.time | 0, 2, 30);
+  if (set.grav !== undefined) game.gravityMul = clamp((set.grav | 0) / 100, 0.3, 2.0);
   maintainBots();
+  broadcastSettings();
   if (mapChanged || modeChanged) {
-    broadcast({ t: 'map', map: mapPayload(), mode: game.mode, scoreLimit: game.scoreLimit, timeLimit: game.timeLimit, bots: game.botTarget, diff: game.botDiff });
+    broadcast({ t: 'map', map: mapPayload(), mode: game.mode, scoreLimit: game.scoreLimit, timeLimit: game.timeLimit, bots: game.botTarget, diff: game.botDiff, grav: Math.round(game.gravityMul * 100) });
     sendRoster();
     resetMatch();
     announce(`${host.name} changed settings — ${game.map.name} · ${game.mode.toUpperCase()}`, 'match');
@@ -1182,6 +1196,10 @@ function applyHostSettings(set, host) {
     resetMatch();
     announce(`${host.name} restarted the match`, 'match');
   }
+}
+
+function broadcastSettings() {
+  broadcast({ t: 'set', mode: game.mode, scoreLimit: game.scoreLimit, timeLimit: game.timeLimit, bots: game.botTarget, diff: game.botDiff, grav: Math.round(game.gravityMul * 100) });
 }
 
 function handleJoin(conn, name) {
@@ -1197,7 +1215,7 @@ function handleJoin(conn, name) {
   conn.send(JSON.stringify({
     t: 'w', id: p.id, map: mapPayload(), mode: game.mode,
     scoreLimit: game.scoreLimit, timeLimit: game.timeLimit,
-    bots: game.botTarget, diff: game.botDiff,
+    bots: game.botTarget, diff: game.botDiff, grav: Math.round(game.gravityMul * 100),
     roster: [...game.players.values()].map((q) => [q.id, q.name, q.team, q.bot ? 1 : 0, q.host ? 1 : 0]),
   }));
   sendRoster();
@@ -1285,6 +1303,7 @@ function boot() {
   game.botDiff = ARGS.diff !== undefined ? clamp(parseInt(ARGS.diff, 10) || 0, 0, 2) : 1;
   game.scoreLimit = clamp(parseInt(ARGS.score, 10) || 25, 5, 100);
   game.timeLimit = clamp(parseInt(ARGS.time, 10) || 8, 2, 30);
+  game.gravityMul = ARGS.grav !== undefined ? clamp((parseInt(ARGS.grav, 10) || 100) / 100, 0.3, 2.0) : 1;
   game.tl = game.timeLimit * 60;
   maintainBots();
 

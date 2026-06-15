@@ -26,6 +26,7 @@ resize();
 
 const PHW = 14, PHH = 23;
 const WNAME = ['PISTOL', 'SMG', 'SHOTGUN', 'RIFLE', 'SNIPER', 'ROCKET'];
+const LIGHT = new Set([0, 1, 3]);   // dual-wielded weapons (match server `light`)
 const KILLNAME = ['PISTOL', 'SMG', 'SHOTGUN', 'RIFLE', 'SNIPER', 'ROCKET', 'GRENADE', 'MELEE', 'LAVA', 'VOID'];
 const ITEMNAME = { 0: 'PISTOL', 1: 'SMG', 2: 'SHOTGUN', 3: 'RIFLE', 4: 'SNIPER', 5: 'ROCKET LAUNCHER', 10: 'MEDKIT', 11: 'GRENADES' };
 const TEAM_COLORS = ['#ff4655', '#2e9bff'];
@@ -44,6 +45,7 @@ const state = {
   timeLimit: 8,
   bots: 3,
   diff: 1,
+  grav: 100,
   roster: new Map(),          // id -> {name, team, bot, host}
   snaps: [],                  // parsed snapshots
   playTs: 0,                  // interpolated server-time being rendered (ms)
@@ -60,7 +62,10 @@ const state = {
   lastKiller: '',
 };
 
-const cam = { x: 1300, y: 750, shakeT: 0, shakeMag: 0 };
+const cam = { x: 1300, y: 750, shakeT: 0, shakeMag: 0, zoom: 1, zoomTarget: 1 };
+// 3 camera zoom tiers, chosen by the equipped weapon (longer range = pull back)
+const WEAPON_ZOOM = [1.0, 1.0, 1.0, 0.84, 0.66, 0.72];   // pistol smg shotgun rifle sniper rocket
+const ZOOM_TIERS = [1.0, 0.84, 0.66];
 const mouse = { x: 0, y: 0, down: false };
 const keys = {};
 let ws = null;
@@ -311,6 +316,15 @@ function handleMsg(m) {
     case 'k': onKill(m); break;
     case 'c': onChat(m); break;
     case 'a': onAnnounce(m); break;
+    case 'set':
+      state.mode = m.mode;
+      if (m.scoreLimit) state.scoreLimit = m.scoreLimit;
+      if (m.timeLimit) state.timeLimit = m.timeLimit;
+      if (m.bots !== undefined) state.bots = m.bots;
+      if (m.diff !== undefined) state.diff = m.diff;
+      if (m.grav !== undefined) state.grav = m.grav;
+      syncHostPanel();
+      break;
     case 'o':
       state.matchOver = { wid: m.wid, wteam: m.wteam };
       AU.sting('gold');
@@ -325,6 +339,7 @@ function applyMap(map, m) {
   if (m.timeLimit) state.timeLimit = m.timeLimit;
   if (m.bots !== undefined) state.bots = m.bots;
   if (m.diff !== undefined) state.diff = m.diff;
+  if (m.grav !== undefined) state.grav = m.grav;
   buildParallax();
   cam.x = map.w / 2; cam.y = map.h / 2;
   selfSmooth = null;
@@ -486,8 +501,8 @@ setInterval(() => {
   let d = (keys['s'] || keys['arrowdown']) ? 1 : 0;
   let aim = 0;
   if (me) {
-    const wx = cam.x + (mouse.x - viewW / 2);
-    const wy = cam.y + (mouse.y - viewH / 2);
+    const wx = cam.x + (mouse.x - viewW / 2) / cam.zoom;
+    const wy = cam.y + (mouse.y - viewH / 2) / cam.zoom;
     aim = Math.atan2(wy - me.y, wx - me.x);
   }
   let f = mouse.down ? 1 : 0;
@@ -707,10 +722,19 @@ function pickEditable(x, y) {
 function enterEdit() {
   touch.editing = true;
   if (!touch.editable.includes(touch.sel)) touch.sel = 'aim';
+  // clear any menus so the controls are visible on the canvas (works pre-game too)
+  escOpen = false;
+  $('escMenu').classList.add('hidden');
+  $('menu').classList.add('hidden');
   $('editBar').classList.remove('hidden');
   updateEditUI();
 }
-function exitEdit() { touch.editing = false; saveLayout(); $('editBar').classList.add('hidden'); }
+function exitEdit() {
+  touch.editing = false;
+  saveLayout();
+  $('editBar').classList.add('hidden');
+  if (!state.connected) $('menu').classList.remove('hidden');   // back to the main menu
+}
 function resetLayout() { touch.cfg = {}; saveLayout(); updateEditUI(); }
 function updateEditUI() {
   touchLayout();
@@ -780,6 +804,8 @@ function syncHostPanel() {
   $('hDiff').value = String(state.diff);
   $('hScore').value = String(state.scoreLimit);
   $('hTime').value = String(state.timeLimit);
+  $('hGrav').value = String(state.grav);
+  $('hGravVal').textContent = state.grav + '%';
 }
 
 /* ====================== INTERPOLATION / RENDER STATE ===================== */
@@ -1105,8 +1131,11 @@ function worldTransform() {
     sx = (Math.random() - 0.5) * 2 * cam.shakeMag * k;
     sy = (Math.random() - 0.5) * 2 * cam.shakeMag * k;
   }
+  const z = cam.zoom;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.translate(Math.round(viewW / 2 - cam.x + sx), Math.round(viewH / 2 - cam.y + sy));
+  ctx.translate(viewW / 2 + sx, viewH / 2 + sy);
+  ctx.scale(z, z);
+  ctx.translate(-cam.x, -cam.y);
 }
 
 function drawMap(now) {
@@ -1296,15 +1325,22 @@ function drawPlayer(p, now) {
   ctx.fillRect(4.5, -1.8, 4, 3.4);
   ctx.restore();
 
-  // arm + gun
+  // arm + gun(s) — light weapons are dual-wielded (one in each hand)
+  const wt = p.weapons && p.weapons[p.cur] ? p.weapons[p.cur][0] : 0;
+  const dual = LIGHT.has(wt);
   ctx.save();
   ctx.translate(0, -5);
   ctx.rotate(p.aim);
   if (facing === -1) ctx.scale(1, -1);
-  ctx.strokeStyle = '#10131f'; ctx.lineWidth = 4.4;
-  ctx.beginPath(); ctx.moveTo(0, 2); ctx.lineTo(12, 3); ctx.stroke();
-  ctx.translate(10, 0);
-  drawGun(p.weapons && p.weapons[p.cur] ? p.weapons[p.cur][0] : 0, 1.25);
+  const hands = dual ? [-6, 7] : [1];
+  for (const hy of hands) {
+    ctx.save();
+    ctx.strokeStyle = '#10131f'; ctx.lineWidth = 4.4;
+    ctx.beginPath(); ctx.moveTo(0, 2); ctx.lineTo(12, hy + 1); ctx.stroke();
+    ctx.translate(10, hy);
+    drawGun(wt, dual ? 1.1 : 1.25);
+    ctx.restore();
+  }
   ctx.restore();
 
   ctx.restore();
@@ -1571,7 +1607,7 @@ function drawHUD(now, dt) {
     let cx, cy;
     const touchAiming = touch.enabled && touch.usedAim;
     if (touchAiming) {
-      const psx = viewW / 2 + (me.x - cam.x), psy = viewH / 2 + (me.y - cam.y);
+      const psx = viewW / 2 + (me.x - cam.x) * cam.zoom, psy = viewH / 2 + (me.y - cam.y) * cam.zoom;
       const reach = 78 + state.recoilHeat * 10;
       cx = psx + Math.cos(touch.lastAim) * reach;
       cy = psy + Math.sin(touch.lastAim) * reach;
@@ -1936,6 +1972,9 @@ function drawMenuScene(now, dt) {
     ctx.lineTo(x, viewH);
     ctx.stroke();
   }
+  ctx.globalAlpha = 1;
+  // allow customising controls from the main menu (pre-game)
+  if (touch.editing) { R = null; drawTouchControls(); }
 }
 
 /* ============================== MAIN LOOP =============================== */
@@ -1958,6 +1997,11 @@ function frame(now) {
   // camera
   const me = R.players.get(state.myId);
   if (me) {
+    // zoom tier follows the equipped weapon (pull back for long-range guns)
+    const wt = me.weapons && me.weapons[me.cur] ? me.weapons[me.cur][0] : 0;
+    cam.zoomTarget = WEAPON_ZOOM[wt] != null ? WEAPON_ZOOM[wt] : 1;
+    cam.zoom += (cam.zoomTarget - cam.zoom) * (1 - Math.exp(-5 * dt));
+    const z = cam.zoom;
     const lookX = Math.max(-150, Math.min(150, (mouse.x - viewW / 2) * 0.22));
     const lookY = Math.max(-110, Math.min(110, (mouse.y - viewH / 2) * 0.22));
     const tx = me.x + ((me.flags & FLAG_DEAD) ? 0 : lookX);
@@ -1965,9 +2009,10 @@ function frame(now) {
     const k = 1 - Math.exp(-8 * dt);
     cam.x += (tx - cam.x) * k;
     cam.y += (ty - cam.y) * k;
-    // keep the view inside the map; center if the map is smaller than the view
-    const minX = viewW * 0.5, maxX = state.map.w - viewW * 0.5;
-    const minY = viewH * 0.5, maxY = state.map.h - viewH * 0.5;
+    // keep the view inside the map (half-extents grow as we zoom out)
+    const hw = viewW / (2 * z), hh = viewH / (2 * z);
+    const minX = hw, maxX = state.map.w - hw;
+    const minY = hh, maxY = state.map.h - hh;
     cam.x = minX > maxX ? state.map.w / 2 : Math.max(minX, Math.min(maxX, cam.x));
     cam.y = minY > maxY ? state.map.h / 2 : Math.max(minY, Math.min(maxY, cam.y));
     if (!Number.isFinite(cam.x)) cam.x = state.map.w / 2;
@@ -2028,6 +2073,8 @@ function deploy() {
 }
 $('deploy').addEventListener('click', deploy);
 $('name').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') deploy(); ev.stopPropagation(); });
+// settings + control layout are reachable from the main menu, not just in-game
+$('openSettings').addEventListener('click', () => { AU.init(); toggleEsc(); });
 
 /* touch setup: swap menu hints, reveal touch settings, wire toggles + editor */
 if (touch.enabled) {
@@ -2055,12 +2102,14 @@ AU.musVol = parseFloat($('volMusic').value) / 100;
 $('volSfx').addEventListener('input', () => { AU.setSfx(parseFloat($('volSfx').value) / 100); localStorage.setItem('nm_sfx', String(AU.sfxVol)); });
 $('volMusic').addEventListener('input', () => { AU.setMus(parseFloat($('volMusic').value) / 100); localStorage.setItem('nm_mus', String(AU.musVol)); });
 
+$('hGrav').addEventListener('input', () => { $('hGravVal').textContent = $('hGrav').value + '%'; });
 $('hApply').addEventListener('click', () => {
   send({
     t: 'h', set: {
       map: $('hMap').value, mode: $('hMode').value,
       bots: parseInt($('hBots').value, 10), diff: parseInt($('hDiff').value, 10),
       score: parseInt($('hScore').value, 10), time: parseInt($('hTime').value, 10),
+      grav: parseInt($('hGrav').value, 10),
     },
   });
   AU.uiClick();

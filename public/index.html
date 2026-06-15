@@ -142,6 +142,7 @@
   <div class="sub">JETPACK ARENA · LAN MULTIPLAYER</div>
   <input id="name" type="text" maxlength="16" placeholder="CALLSIGN" autocomplete="off">
   <button id="deploy">DEPLOY ▸</button>
+  <button id="openSettings" class="small" style="margin-top:4px">⚙ SETTINGS &amp; CONTROLS</button>
   <div id="menuStatus"></div>
   <div id="lanTip">LAN party: friends on your network open <b id="lanUrl"></b></div>
   <div class="controls-grid">
@@ -185,6 +186,7 @@
       </div>
       <div class="row"><span>SCORE LIMIT</span><input id="hScore" type="number" min="5" max="100" value="25"></div>
       <div class="row"><span>TIME (MIN)</span><input id="hTime" type="number" min="2" max="30" value="8"></div>
+      <div class="row"><span>GRAVITY <b id="hGravVal" style="color:var(--neon)">100%</b></span><input id="hGrav" type="range" min="30" max="200" value="100"></div>
       <div class="row" style="justify-content:center; gap:10px; margin-top:4px">
         <button id="hApply" class="small">APPLY</button>
         <button id="hRestart" class="small danger">RESTART MATCH</button>
