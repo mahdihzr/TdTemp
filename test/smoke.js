@@ -166,35 +166,33 @@ async function main() {
   };
 
   const alive = () => { const me = findMe(); return me && !(me[9] & 8); };
-  // spawn-protected (flag 4): ~2s of invulnerability. The idle test client gets
-  // fragged by the deadly bots every few seconds, so protected windows recur —
-  // and move/jetpack don't break protection, so measuring inside one can't be
-  // interrupted by a frag. Each retry alternates direction to dodge wall wedging.
-  const safe = () => { const me = findMe(); return me && !(me[9] & 8) && (me[9] & 4); };
   const idle = () => ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 0, a: 0 });
-  const attempt = async (label, fn, gate) => {
-    for (let i = 0; i < 8; i++) { await waitFor(gate || alive, 9000, label); const r = await fn(i); idle(); if (r !== null) return r; await sleep(150); }
+  // Retry generously. waitFor(alive) tends to fire right after a respawn (the
+  // player was dead during the previous retry's gap), so measurements usually
+  // start inside the ~2s spawn-protection window and finish before a frag lands;
+  // any that don't just retry. Each retry alternates direction to dodge wedging
+  // against a wall or under an overhang.
+  const attempt = async (label, fn) => {
+    for (let i = 0; i < 12; i++) { await waitFor(alive, 9000, label); const r = await fn(i); idle(); if (r !== null) return r; await sleep(120); }
     return null;
   };
 
-  // jetpack: jet up-and-sideways during spawn protection, track the peak rise
+  // jetpack: jet up-and-sideways, track the peak height reached during the hold
   const rise = await attempt('jetpack check', async (i) => {
-    if (!safe()) return null;
     const dir = i % 2 ? -1 : 1, startY = findMe()[2]; let peakY = startY;
     ws.send({ t: 'i', l: dir < 0 ? 1 : 0, r: dir > 0 ? 1 : 0, u: 1, d: 0, f: 0, a: 0 });
     for (let k = 0; k < 16; k++) { await sleep(50); if (!alive()) return null; peakY = Math.min(peakY, findMe()[2]); }
     return peakY - startY < -40 ? peakY - startY : null;
-  }, safe);
+  });
   ok(rise !== null, `jetpack lifts player (peak rise=${rise === null ? 'boxed in' : Math.round(-rise)}px)`);
 
-  // movement: hold a direction during spawn protection, require travel
+  // movement: hold a direction, require travel
   const dx = await attempt('move check', async (i) => {
-    if (!safe()) return null;
     const dir = i % 2 ? -1 : 1, x0 = findMe()[1]; let moved = 0;
     ws.send({ t: 'i', l: dir < 0 ? 1 : 0, r: dir > 0 ? 1 : 0, u: 0, d: 0, f: 0, a: 0 });
     for (let k = 0; k < 16; k++) { await sleep(50); if (!alive()) return null; moved = findMe()[1] - x0; }
     return Math.abs(moved) > 50 ? moved : null;
-  }, safe);
+  });
   ok(dx !== null, `input moves player (dx=${dx === null ? 'stuck' : Math.round(dx)}px)`);
 
   // firing: confirm our own muzzle events fire (dual-wield light weapon → ≥2/shot).
