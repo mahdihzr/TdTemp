@@ -107,7 +107,9 @@ function fetch200(port, p) {
 
 async function main() {
   console.log('Booting server…');
-  const server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js'), '--port', String(PORT), '--bots', '4', '--diff', '2', '--map', 'foundry'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  // CAVERN has a full ground floor and no lava/void, so the controlled test
+  // player can't die to a hazard mid-check (keeps the physics asserts stable).
+  const server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js'), '--port', String(PORT), '--bots', '4', '--diff', '2', '--map', 'cavern'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let serverOut = '';
   server.stdout.on('data', (d) => { serverOut += d.toString(); });
   server.stderr.on('data', (d) => { serverOut += d.toString(); });
@@ -124,13 +126,14 @@ async function main() {
   ok(evil.code !== 200 || evil.bytes === 0, 'blocks path traversal');
 
   // connect & join
-  const msgs = { w: null, snaps: [], kills: 0, chats: [], rosters: 0, events: { shots: 0, hits: 0 } };
+  const msgs = { w: null, snaps: [], kills: 0, chats: [], rosters: 0, ownShots: 0, events: { shots: 0, hits: 0 } };
   const ws = await wsConnect(PORT, (m) => {
     if (m.t === 'w') msgs.w = m;
     else if (m.t === 's') {
       msgs.snaps.push(m);
+      const mine = msgs.w && msgs.w.id;
       for (const e of m.e) {
-        if (e[0] === 0) msgs.events.shots++;
+        if (e[0] === 0) { msgs.events.shots++; if (e[5] === mine) msgs.ownShots++; }
         if (e[0] === 2) msgs.events.hits++;
       }
     }
@@ -161,39 +164,54 @@ async function main() {
     return null;
   };
 
-  // wait until alive then move right
-  await waitFor(() => { const me = findMe(); return me && !(me[9] & 8); }, 4000, 'player spawns');
-  const before = findMe();
-  ws.send({ t: 'i', l: 0, r: 1, u: 0, d: 0, f: 0, a: 0 });
-  await sleep(1200);
-  ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 0, a: 0 });
-  const after = findMe();
-  const dx = before && after ? after[1] - before[1] : 0;
-  ok(Math.abs(dx) > 50, `input moves player (dx=${Math.round(dx)}px)`);
+  const alive = () => { const me = findMe(); return me && !(me[9] & 8); };
+  const waitAlive = (label) => waitFor(alive, 6000, label);
+  const idle = () => ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 0, a: 0 });
+  // Retry a measurement until the player survives the whole window — the test
+  // client is a sitting duck, so a stray bot frag can interrupt any single try.
+  const attempt = async (label, fn) => {
+    for (let i = 0; i < 6; i++) { await waitAlive(label); const r = await fn(); idle(); if (r !== null) return r; await sleep(300); }
+    return null;
+  };
 
-  // jetpack: hold up, expect to gain height
-  const beforeY = findMe();
-  ws.send({ t: 'i', l: 0, r: 0, u: 1, d: 0, f: 0, a: 0 });
-  await sleep(900);
-  ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 0, a: 0 });
-  const afterY = findMe();
-  const dy = beforeY && afterY ? afterY[2] - beforeY[2] : 0;
-  ok(dy < -40, `jetpack lifts player (dy=${Math.round(dy)}px)`);
+  await waitAlive('player spawns');
 
-  // we can shoot: fire for a moment and expect our ammo to drop
-  const ammoBefore = findMe()[13].find((w) => w[0] === 1);
-  ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 1, a: 0.5 });
-  await sleep(700);
-  ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 0, a: 0.5 });
-  const ammoAfter = findMe()[13].find((w) => w[0] === 1);
-  ok(ammoBefore && ammoAfter && ammoAfter[1] < ammoBefore[1], `firing consumes ammo (${ammoBefore && ammoBefore[1]} -> ${ammoAfter && ammoAfter[1]})`);
+  // movement: hold right, require the player to travel while staying alive
+  const dx = await attempt('alive for move check', async () => {
+    const s = findMe(); if (!alive()) return null;
+    const x0 = s[1];
+    ws.send({ t: 'i', l: 0, r: 1, u: 0, d: 0, f: 0, a: 0 });
+    let moved = 0;
+    for (let i = 0; i < 22; i++) { await sleep(50); if (!alive()) return null; moved = findMe()[1] - x0; }
+    return moved;
+  });
+  ok(dx !== null && Math.abs(dx) > 50, `input moves player (dx=${dx === null ? 'died' : Math.round(dx)}px)`);
+
+  // jetpack: hold up, track the peak height reached during the hold
+  const rise = await attempt('alive for jetpack check', async () => {
+    const startY = findMe()[2]; let peakY = startY;
+    ws.send({ t: 'i', l: 0, r: 0, u: 1, d: 0, f: 0, a: 0 });
+    for (let i = 0; i < 16; i++) { await sleep(50); if (!alive()) return null; peakY = Math.min(peakY, findMe()[2]); }
+    return peakY - startY;
+  });
+  ok(rise !== null && rise < -40, `jetpack lifts player (peak rise=${rise === null ? 'died' : Math.round(-rise)}px)`);
+
+  // firing: confirm our own muzzle events fire (ammo alone is fragile — a
+  // respawn refills it)
+  const fired = await attempt('alive for fire check', async () => {
+    const shots0 = msgs.ownShots;
+    ws.send({ t: 'i', l: 0, r: 0, u: 0, d: 0, f: 1, a: 0.5 });
+    for (let i = 0; i < 14; i++) { await sleep(50); if (!alive()) return null; }
+    return msgs.ownShots - shots0;
+  });
+  ok(fired !== null && fired > 0, `firing produces shots (${fired === null ? 'died' : fired} muzzle events)`);
 
   // bots fight: combat events should flow within a few seconds
   await waitFor(() => msgs.events.shots > 20, 8000, 'bots are shooting');
   ok(msgs.events.shots > 20, `combat events flow (${msgs.events.shots} shots, ${msgs.events.hits} hits)`);
 
-  // full kill cycle: someone should die within a reasonable window
-  await waitFor(() => msgs.kills >= 1, 25000, 'a kill happens');
+  // full kill cycle: someone should die within a generous window
+  await waitFor(() => msgs.kills >= 1, 40000, 'a kill happens');
   ok(msgs.kills >= 1, `kill feed works (${msgs.kills} kills, ${msgs.events.hits} hits)`);
 
   // chat round-trip

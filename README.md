@@ -1,7 +1,8 @@
 # NEON MILITIA
 
 A complete **Mini-Militia-style 2D jetpack arena shooter** with **LAN multiplayer**,
-AI bots, and zero dependencies. One Node.js file is the server; the browser is the game.
+**full touch controls for mobile**, AI bots, and zero dependencies. One Node.js
+file is the server; the browser is the game — on a phone, tablet, or desktop.
 
 ```
   ███╗   ██╗███████╗ ██████╗ ███╗   ██╗
@@ -74,6 +75,25 @@ from the in-game menu (`ESC` → Host Controls).
 
 ## Controls
 
+### Mobile / touch (Mini-Militia-style)
+
+The game **auto-detects touch devices** and shows full on-screen controls — no
+app, just open the URL in the phone's browser and tap **DEPLOY** (it goes
+fullscreen and asks for landscape).
+
+- **Left thumbstick** — move. Push **up to fly** (jetpack), push **down** to fast-fall.
+  The stick is floating: it appears wherever your thumb lands in the left half.
+- **Right thumbstick** — aim. With **auto-fire** on (default), you shoot while you
+  steer it, exactly like Mini Militia. Floating, in the right half.
+- **Action buttons** (right side) — **NADE**, **MELEE**, **DASH**, **SWAP** (cycle
+  weapon), **GRAB** (replace weapon on a crate). **Tap a weapon** in the top strip
+  to switch to it directly.
+- **☰** (top-right) opens the menu; **≣** toggles the scoreboard.
+- In the menu: toggle **auto-fire**, switch to a **left-handed** layout, and resize
+  the controls.
+
+### Keyboard + mouse (desktop)
+
 | key | action |
 |---|---|
 | `A` `D` | move |
@@ -89,6 +109,8 @@ from the in-game menu (`ESC` → Host Controls).
 | `T` | chat |
 | `ESC` | menu / host controls |
 | `M` | mute |
+
+Desktop and touch input coexist, so hybrid touch-laptops work with either.
 
 ## Tests
 
@@ -118,4 +140,5 @@ The wire protocol is documented at the top of `server.js`. Clients interpolate
 ~80 ms behind the newest snapshot (with light self-extrapolation for snappy feel),
 which is plenty smooth on a LAN.
 
-Desktop browsers only (keyboard + mouse). Have fun!
+Works on desktop (keyboard + mouse) and phones/tablets (full touch controls).
+Have fun!

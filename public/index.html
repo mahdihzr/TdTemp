@@ -12,9 +12,24 @@
     --bg: #05070f;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
-  body { font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #dfe9ff; user-select: none; }
-  canvas#game { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: none; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); overscroll-behavior: none; }
+  body { font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #dfe9ff; user-select: none; -webkit-user-select: none; }
+  canvas#game { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: none; touch-action: none; -webkit-tap-highlight-color: transparent; }
+
+  /* touch devices: swap the keyboard hint for a touch hint, hide cursor UI */
+  .controls-grid { display: grid; }
+  body.touch .controls-grid { display: none; }
+  #touchHint { display: none; }
+  body.touch #touchHint { display: block; max-width: 720px; padding: 14px 22px; border: 1px solid rgba(80,120,200,.25); border-radius: 8px; background: rgba(8,12,26,.55); font-size: 14px; color: #aebfe2; line-height: 1.7; text-align: center; }
+  body.touch #touchHint b { color: #fff; background: rgba(70,110,190,.25); border: 1px solid rgba(120,160,240,.35); border-radius: 3px; padding: 0 6px; }
+  .touchOnly { display: none; }
+
+  /* rotate-to-landscape nag (portrait phones) */
+  #rotate { position: fixed; inset: 0; z-index: 50; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: rgba(4,6,14,.96); text-align: center; }
+  #rotate .ico { font-size: 64px; animation: spin 2.2s ease-in-out infinite; }
+  #rotate div.txt { letter-spacing: .25em; color: var(--neon); font-weight: 800; }
+  @keyframes spin { 0%,40% { transform: rotate(0); } 60%,100% { transform: rotate(90deg); } }
+  @media (orientation: portrait) and (pointer: coarse) { body.touch.ingame #rotate { display: flex; } }
 
   .overlay {
     position: fixed; inset: 0; display: flex; flex-direction: column;
@@ -128,8 +143,17 @@
     <div><b>1-3 / WHEEL</b> weapons</div><div><b>TAB</b> scoreboard</div>
     <div><b>T</b> chat</div><div><b>ESC</b> menu · <b>M</b> mute</div>
   </div>
+  <div id="touchHint">
+    <b>LEFT STICK</b> move · push up to <b>FLY</b> · push down to drop<br>
+    <b>RIGHT STICK</b> aim — auto-fires while you steer it<br>
+    <b>NADE · MELEE · DASH · SWAP · GRAB</b> buttons on the right · tap a weapon to switch<br>
+    Best in <b>landscape</b>. Tap ☰ for the menu (auto-fire, left-handed, control size).
+  </div>
   <div class="footer">RUNS ANYWHERE · NO INSTALL · BOTS INCLUDED</div>
 </div>
+
+<!-- rotate to landscape -->
+<div id="rotate"><div class="ico">📱</div><div class="txt">ROTATE TO LANDSCAPE</div></div>
 
 <!-- esc menu -->
 <div id="escMenu" class="overlay hidden">
@@ -156,6 +180,13 @@
         <button id="hApply" class="small">APPLY</button>
         <button id="hRestart" class="small danger">RESTART MATCH</button>
       </div>
+    </div>
+    <div id="touchSettings" class="touchOnly hidden">
+      <hr>
+      <h3 style="font-size:12px; letter-spacing:.25em; color:var(--gold); margin-bottom:6px">✱ TOUCH CONTROLS</h3>
+      <div class="row"><span>AUTO-FIRE (aim = shoot)</span><input id="optAutoFire" type="checkbox"></div>
+      <div class="row"><span>LEFT-HANDED LAYOUT</span><input id="optLefty" type="checkbox"></div>
+      <div class="row"><span>CONTROL SIZE</span><input id="optTouchSize" type="range" min="75" max="140" value="100"></div>
     </div>
     <hr>
     <div class="row" style="justify-content:center; gap:10px">

@@ -269,6 +269,7 @@ function connect(name) {
     if (state.connected) toast('DISCONNECTED FROM SERVER');
     state.connected = false;
     state.snaps = [];
+    document.body.classList.remove('ingame');
     $('menu').classList.remove('hidden');
     $('escMenu').classList.add('hidden');
     $('menuStatus').textContent = 'CONNECTION LOST — DEPLOY TO RETRY';
@@ -290,6 +291,7 @@ function handleMsg(m) {
       state.snaps = [];
       state.matchOver = null;
       $('menu').classList.add('hidden');
+      document.body.classList.add('ingame');
       $('menuStatus').textContent = '';
       syncHostPanel();
       break;
@@ -472,25 +474,41 @@ function toast(msg) {
   setTimeout(() => d.remove(), 3300);
 }
 
-/* input sender */
+/* input sender — keyboard+mouse, with touch joysticks overlaid when used */
 setInterval(() => {
   if (!state.connected || !state.map) return;
   const me = curSelf();
+
+  // base: keyboard movement + mouse aim/fire
+  let l = (keys['a'] || keys['arrowleft']) ? 1 : 0;
+  let r = (keys['d'] || keys['arrowright']) ? 1 : 0;
+  let u = (keys['w'] || keys[' '] || keys['arrowup']) ? 1 : 0;
+  let d = (keys['s'] || keys['arrowdown']) ? 1 : 0;
   let aim = 0;
   if (me) {
     const wx = cam.x + (mouse.x - viewW / 2);
     const wy = cam.y + (mouse.y - viewH / 2);
     aim = Math.atan2(wy - me.y, wx - me.x);
   }
-  send({
-    t: 'i',
-    l: (keys['a'] || keys['arrowleft']) ? 1 : 0,
-    r: (keys['d'] || keys['arrowright']) ? 1 : 0,
-    u: (keys['w'] || keys[' '] || keys['arrowup']) ? 1 : 0,
-    d: (keys['s'] || keys['arrowdown']) ? 1 : 0,
-    f: mouse.down && !chatOpen && !escOpen ? 1 : 0,
-    a: Math.round(aim * 1000) / 1000,
-  });
+  let f = mouse.down ? 1 : 0;
+
+  // touch joysticks take over the axes they're actively driving
+  if (touch.enabled) {
+    const mv = touch.move, am = touch.aim, DZ = 0.30;
+    if (mv.active) {
+      l = mv.nx < -DZ ? 1 : 0;
+      r = mv.nx > DZ ? 1 : 0;
+      u = mv.ny < -0.34 ? 1 : 0;
+      d = mv.ny > 0.55 ? 1 : 0;
+    }
+    if (am.active && am.mag > 0.18) { touch.lastAim = Math.atan2(am.ny, am.nx); touch.usedAim = true; }
+    if (touch.usedAim) aim = touch.lastAim;
+    const touchFire = (touch.autoFire && am.active && am.mag > 0.25) || touch.fireHeld;
+    f = (f || touchFire) ? 1 : 0;
+  }
+  if (chatOpen || escOpen) f = 0;
+
+  send({ t: 'i', l, r, u, d, f, a: Math.round(aim * 1000) / 1000 });
 }, 33);
 
 setInterval(() => { send({ t: 'p', c: Date.now() }); }, 3000);
@@ -547,6 +565,162 @@ function switchSlot(i) {
   if (!me || !me.weapons || i >= me.weapons.length || i === me.cur) return;
   state.lastSlot = me.cur;
   send({ t: 'sw', i });
+}
+function cycleWeapon() {
+  const me = curSelf();
+  if (!me || !me.weapons) return;
+  const n = me.weapons.length;
+  switchSlot((me.cur + 1) % n);
+}
+
+/* ============================== TOUCH CONTROLS =========================== */
+/* Mini-Militia-style: left thumb = floating move/fly stick, right thumb =
+   floating aim stick with auto-fire, plus action buttons. Coexists with
+   mouse/keyboard so hybrid touch-laptops still work. */
+
+const IS_TOUCH = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+  ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
+
+function clampNum(v, a, b, dflt) { return Number.isFinite(v) ? Math.max(a, Math.min(b, v)) : dflt; }
+function makeStick() { return { active: false, bx: 0, by: 0, kx: 0, ky: 0, nx: 0, ny: 0, mag: 0 }; }
+
+const touch = {
+  enabled: IS_TOUCH,
+  autoFire: localStorage.getItem('nm_autofire') !== '0',
+  lefty: localStorage.getItem('nm_lefty') === '1',
+  scale: clampNum(parseFloat(localStorage.getItem('nm_tscale')), 0.75, 1.4, 1),
+  move: makeStick(), aim: makeStick(),
+  lastAim: 0, usedAim: false, fireHeld: false,
+  buttons: [], weaponHit: [],
+  active: new Map(),  // touch identifier -> { role:'move'|'aim'|'btn'|'wpn', id, slot }
+  moveZone: null, aimZone: null, stickR: 82, moveDefault: [0, 0], aimDefault: [0, 0],
+};
+
+function touchLayout() {
+  const s = touch.scale;
+  const R = 82 * s;
+  const aimRight = !touch.lefty;            // right-handed: aim stick on the right
+  const midX = viewW * 0.5;
+  const top = viewH * 0.30;                 // keep top strip free for HUD
+  const left = { x0: 0, x1: midX, y0: top, y1: viewH };
+  const right = { x0: midX, x1: viewW, y0: top, y1: viewH };
+  touch.moveZone = aimRight ? left : right;
+  touch.aimZone = aimRight ? right : left;
+  touch.stickR = R;
+  const lowCorner = viewH - 132 * s;
+  touch.moveDefault = aimRight ? [136 * s, lowCorner] : [viewW - 136 * s, lowCorner];
+  touch.aimDefault = aimRight ? [viewW - 136 * s, lowCorner] : [136 * s, lowCorner];
+
+  // action buttons live on the aim-thumb side, in the upper region (tap by
+  // reaching up), so they never collide with the floating aim stick below.
+  const colX = aimRight ? viewW - 48 * s : 48 * s;
+  const col2X = aimRight ? viewW - 134 * s : 134 * s;
+  const br = 31 * s, br2 = 28 * s;
+  const y0 = viewH * 0.30, gap = 82 * s;
+  const btns = [
+    { id: 'nade', label: 'NADE', glyph: '✛', cx: colX, cy: y0, r: br },
+    { id: 'melee', label: 'MELEE', glyph: '⚔', cx: colX, cy: y0 + gap, r: br },
+    { id: 'dash', label: 'DASH', glyph: '⟫', cx: colX, cy: y0 + gap * 2, r: br },
+    { id: 'swap', label: 'SWAP', glyph: '⟳', cx: col2X, cy: y0, r: br2 },
+    { id: 'use', label: 'GRAB', glyph: '▤', cx: col2X, cy: y0 + gap, r: br2 },
+  ];
+  if (!touch.autoFire) {
+    btns.push({ id: 'fire', label: 'FIRE', glyph: '◉', cx: aimRight ? viewW - 78 * s : 78 * s, cy: viewH - 78 * s, r: 50 * s, hold: true });
+  }
+  // system buttons, top-right corner
+  btns.push({ id: 'menu', glyph: '☰', cx: viewW - 28, cy: 30, r: 19, sys: true });
+  btns.push({ id: 'board', glyph: '≣', cx: viewW - 72, cy: 30, r: 19, sys: true });
+  touch.buttons = btns;
+}
+
+function inZone(x, y, z) { return z && x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1; }
+
+function touchHitTest(x, y) {
+  touchLayout();
+  for (const b of touch.buttons) {
+    const rr2 = (b.r + 10) * (b.r + 10);
+    const dx = x - b.cx, dy = y - b.cy;
+    if (dx * dx + dy * dy <= rr2) return { role: 'btn', id: b.id, hold: !!b.hold };
+  }
+  for (const w of touch.weaponHit) {
+    if (x >= w.x && x <= w.x + w.w && y >= w.y && y <= w.y + w.h) return { role: 'wpn', slot: w.i };
+  }
+  if (inZone(x, y, touch.moveZone)) return { role: 'move' };
+  if (inZone(x, y, touch.aimZone)) return { role: 'aim' };
+  return null;
+}
+
+function updateStick(st, x, y) {
+  const R = touch.stickR;
+  let dx = x - st.bx, dy = y - st.by;
+  const mag = Math.hypot(dx, dy) || 0.0001;
+  const cl = Math.min(mag, R);
+  const ux = dx / mag, uy = dy / mag;
+  st.kx = st.bx + ux * cl; st.ky = st.by + uy * cl;
+  st.nx = (ux * cl) / R; st.ny = (uy * cl) / R;
+  st.mag = cl / R;
+}
+
+function onTouchButton(id, down) {
+  if (id === 'menu') { if (down) toggleEsc(); return; }
+  if (id === 'board') {
+    boardOpen = down ? true : false;
+    $('scorebox').classList.toggle('hidden', !boardOpen);
+    return;
+  }
+  if (id === 'fire') { touch.fireHeld = down; return; }
+  if (!down || !state.connected || escOpen) return;
+  if (id === 'nade') send({ t: 'act', k: 'nade' });
+  else if (id === 'melee') send({ t: 'act', k: 'melee' });
+  else if (id === 'dash') send({ t: 'act', k: 'dash' });
+  else if (id === 'use') send({ t: 'act', k: 'use' });
+  else if (id === 'swap') cycleWeapon();
+}
+
+function handleTouchStart(t) {
+  const hit = touchHitTest(t.clientX, t.clientY);
+  if (!hit) return;
+  if (hit.role === 'btn') {
+    touch.active.set(t.identifier, { role: 'btn', id: hit.id });
+    onTouchButton(hit.id, true);
+  } else if (hit.role === 'wpn') {
+    touch.active.set(t.identifier, { role: 'wpn' });
+    switchSlot(hit.slot);
+  } else {
+    const st = hit.role === 'move' ? touch.move : touch.aim;
+    touch.active.set(t.identifier, { role: hit.role });
+    st.active = true; st.bx = t.clientX; st.by = t.clientY;
+    updateStick(st, t.clientX, t.clientY);
+  }
+}
+function handleTouchEnd(t) {
+  const a = touch.active.get(t.identifier);
+  if (!a) return;
+  touch.active.delete(t.identifier);
+  if (a.role === 'move') { const s = touch.move; s.active = false; s.nx = s.ny = s.mag = 0; }
+  else if (a.role === 'aim') { const s = touch.aim; s.active = false; s.nx = s.ny = s.mag = 0; }
+  else if (a.role === 'btn') onTouchButton(a.id, false);
+}
+
+if (IS_TOUCH) {
+  const tOpts = { passive: false };
+  canvas.addEventListener('touchstart', (ev) => {
+    AU.init();
+    ev.preventDefault();
+    for (const t of ev.changedTouches) handleTouchStart(t);
+  }, tOpts);
+  canvas.addEventListener('touchmove', (ev) => {
+    ev.preventDefault();
+    for (const t of ev.changedTouches) {
+      const a = touch.active.get(t.identifier);
+      if (!a) continue;
+      if (a.role === 'move') updateStick(touch.move, t.clientX, t.clientY);
+      else if (a.role === 'aim') updateStick(touch.aim, t.clientX, t.clientY);
+    }
+  }, tOpts);
+  const endH = (ev) => { ev.preventDefault(); for (const t of ev.changedTouches) handleTouchEnd(t); };
+  canvas.addEventListener('touchend', endH, tOpts);
+  canvas.addEventListener('touchcancel', endH, tOpts);
 }
 
 function releaseKeys() { for (const k in keys) keys[k] = false; mouse.down = false; }
@@ -1205,25 +1379,31 @@ function drawHUD(now, dt) {
 
   if (!me) return;
   const dead = !!(me.flags & FLAG_DEAD);
+  const tHud = touch.enabled;
 
-  /* --- bottom-left: health & fuel --- */
-  const bx = 22, by = viewH - 30;
+  /* --- health & fuel (bottom-left on desktop; top, right of minimap on touch) --- */
+  const bw = tHud ? 200 : 230;
+  const bx = tHud ? 214 : 22;
+  const hpY = tHud ? 20 : viewH - 66;
+  const fuelY = tHud ? 42 : viewH - 44;
   ctx.font = '800 13px sans-serif';
   ctx.textAlign = 'left';
-  barBox(bx, by - 36, 230, 16);
+  barBox(bx, hpY, bw, 16);
   const hpc = me.hp > 50 ? '#41ff7a' : me.hp > 25 ? '#ffd34d' : '#ff4655';
-  bar(bx, by - 36, 230, 16, me.hp / 100, hpc);
+  bar(bx, hpY, bw, 16, me.hp / 100, hpc);
   ctx.fillStyle = '#eaf3ff';
-  ctx.fillText(`HP ${Math.max(0, me.hp)}`, bx + 6, by - 23.5);
+  ctx.fillText(`HP ${Math.max(0, me.hp)}`, bx + 6, hpY + 12.5);
   const lowFuel = me.fuel < 25;
-  barBox(bx, by - 14, 230, 11);
-  bar(bx, by - 14, 230, 11, me.fuel / 100, lowFuel && Math.sin(now * 0.02) > 0 ? '#ff8a5c' : '#41c7ff');
+  barBox(bx, fuelY, bw, 11);
+  bar(bx, fuelY, bw, 11, me.fuel / 100, lowFuel && Math.sin(now * 0.02) > 0 ? '#ff8a5c' : '#41c7ff');
   ctx.fillStyle = '#9ab4e8';
   ctx.font = '700 9px sans-serif';
-  ctx.fillText('JET FUEL', bx + 6, by - 5.5);
+  ctx.fillText('JET FUEL', bx + 6, fuelY + 8.5);
 
-  /* --- bottom-right: weapons / nades / dash --- */
-  if (me.weapons) {
+  /* --- weapons: horizontal tappable strip on touch, else bottom-right panel --- */
+  if (tHud && me.weapons) {
+    drawWeaponsTouch(me);
+  } else if (me.weapons) {
     const ww = 118, wh = 30;
     let wy = viewH - 24 - me.weapons.length * (wh + 6);
     for (let i = 0; i < me.weapons.length; i++) {
@@ -1296,9 +1476,9 @@ function drawHUD(now, dt) {
     ctx.fillText(`YOU ${me.kills} · LEAD ${lead} (${leadName}) · FIRST TO ${state.scoreLimit}`, viewW / 2, 56);
   }
 
-  /* --- killfeed top-right --- */
+  /* --- killfeed top-right (pushed down on touch to clear system buttons) --- */
   ctx.font = '700 12px sans-serif';
-  let ky = 24;
+  let ky = tHud ? 62 : 24;
   for (const k of state.killfeed) {
     k.t -= dt;
     if (k.t <= 0) continue;
@@ -1350,7 +1530,22 @@ function drawHUD(now, dt) {
   state.hitmarkT = Math.max(0, state.hitmarkT - dt);
   state.recoilHeat = Math.max(0, state.recoilHeat - dt * 2.4);
   if (!dead && !escOpen) {
-    const cx = mouse.x, cy = mouse.y;
+    let cx, cy;
+    const touchAiming = touch.enabled && touch.usedAim;
+    if (touchAiming) {
+      const psx = viewW / 2 + (me.x - cam.x), psy = viewH / 2 + (me.y - cam.y);
+      const reach = 78 + state.recoilHeat * 10;
+      cx = psx + Math.cos(touch.lastAim) * reach;
+      cy = psy + Math.sin(touch.lastAim) * reach;
+      // tracer line from muzzle to reticle so aim is readable at a glance
+      ctx.globalAlpha = 0.3;
+      ctx.strokeStyle = touch.aim.active ? '#ff8a3c' : 'rgba(125,249,255,0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(psx + Math.cos(touch.lastAim) * 24, psy + Math.sin(touch.lastAim) * 24); ctx.lineTo(cx, cy); ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else {
+      cx = mouse.x; cy = mouse.y;
+    }
     const sp = 7 + state.recoilHeat * 16;
     ctx.strokeStyle = 'rgba(125,249,255,0.95)';
     ctx.lineWidth = 1.6;
@@ -1375,6 +1570,9 @@ function drawHUD(now, dt) {
       ctx.stroke();
     }
   }
+
+  /* --- on-screen touch controls --- */
+  drawTouchControls();
 
   /* --- death overlay --- */
   if (dead && R.st === 0) {
@@ -1407,6 +1605,109 @@ function barBox(x, y, w, h) {
 function bar(x, y, w, h, f, col) {
   ctx.fillStyle = col;
   ctx.fillRect(x, y, w * Math.max(0, Math.min(1, f)), h);
+}
+
+function drawStickGfx(st, def, col, label) {
+  const cx = st.active ? st.bx : def[0];
+  const cy = st.active ? st.by : def[1];
+  const R = touch.stickR;
+  ctx.globalAlpha = st.active ? 0.5 : 0.22;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = col;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke();
+  ctx.globalAlpha = st.active ? 0.12 : 0.06;
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
+  // knob
+  const kx = st.active ? st.kx : cx, ky = st.active ? st.ky : cy;
+  ctx.globalAlpha = st.active ? 0.95 : 0.4;
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.arc(kx, ky, R * 0.42, 0, 7); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = `800 ${Math.round(11 * touch.scale)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(label, cx, cy + R + 16);
+}
+
+function drawTouchButton(b, enabled, pressed, sub) {
+  ctx.globalAlpha = b.sys ? 0.6 : (enabled ? 0.85 : 0.32);
+  ctx.beginPath(); ctx.arc(b.cx, b.cy, b.r, 0, 7);
+  ctx.fillStyle = pressed ? 'rgba(125,249,255,0.35)' : 'rgba(10,16,32,0.72)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = pressed ? '#7df9ff' : (enabled ? 'rgba(120,170,255,0.6)' : 'rgba(120,140,170,0.35)');
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = enabled ? '#eaf3ff' : 'rgba(180,195,225,0.5)';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `700 ${Math.round(b.r * (b.sys ? 1.0 : 0.95))}px sans-serif`;
+  ctx.fillText(b.glyph, b.cx, b.cy + 1);
+  if (b.label && !b.sys) {
+    ctx.font = `700 ${Math.round(8 * touch.scale)}px sans-serif`;
+    ctx.fillStyle = 'rgba(200,215,245,0.75)';
+    ctx.fillText(b.label, b.cx, b.cy + b.r + 9);
+  }
+  if (sub) {
+    ctx.font = `800 ${Math.round(12 * touch.scale)}px sans-serif`;
+    ctx.fillStyle = '#c6ff41';
+    ctx.fillText(sub, b.cx + b.r * 0.7, b.cy - b.r * 0.7);
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawTouchControls() {
+  if (!touch.enabled || !R) return;
+  const me = R.players.get(state.myId);
+  const dead = me && (me.flags & FLAG_DEAD);
+  touchLayout();
+  ctx.save();
+  ctx.globalAlpha = dead ? 0.45 : 1;
+  drawStickGfx(touch.move, touch.moveDefault, '#41c7ff', 'MOVE / FLY');
+  drawStickGfx(touch.aim, touch.aimDefault, '#ff8a3c', touch.autoFire ? 'AIM · FIRE' : 'AIM');
+  const pressed = new Set();
+  for (const a of touch.active.values()) if (a.role === 'btn') pressed.add(a.id);
+  for (const b of touch.buttons) {
+    let enabled = true, sub = '';
+    if (me) {
+      if (b.id === 'dash') enabled = me.dashCd <= 0;
+      else if (b.id === 'nade') { enabled = me.nades > 0; sub = String(me.nades); }
+    }
+    drawTouchButton(b, enabled, b.id === 'fire' ? touch.fireHeld : pressed.has(b.id), sub);
+    if (b.id === 'dash' && me && me.dashCd > 0) {
+      ctx.strokeStyle = 'rgba(125,249,255,0.85)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(b.cx, b.cy, b.r + 3, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * (1 - me.dashCd / 2.2)); ctx.stroke();
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// Horizontal, tappable weapon strip for touch — top-center under the timer.
+function drawWeaponsTouch(me) {
+  touch.weaponHit = [];
+  const s = touch.scale;
+  const sw = 96 * s, sh = 30 * s, gap = 6 * s;
+  const n = me.weapons.length;
+  const totalW = n * sw + (n - 1) * gap;
+  let x = viewW / 2 - totalW / 2;
+  const y = 72;
+  for (let i = 0; i < n; i++) {
+    const [wt, ammo] = me.weapons[i];
+    const sel = i === me.cur;
+    ctx.fillStyle = sel ? 'rgba(65,199,255,0.2)' : 'rgba(8,12,26,0.72)';
+    ctx.strokeStyle = sel ? '#41c7ff' : 'rgba(90,140,230,0.35)';
+    ctx.lineWidth = sel ? 2 : 1;
+    rr(x, y, sw, sh, 4); ctx.fill(); ctx.stroke();
+    ctx.save(); ctx.translate(x + 24 * s, y + sh / 2 + 2); drawGun(wt, 0.9 * s); ctx.restore();
+    ctx.fillStyle = sel ? '#fff' : '#8fa8d8';
+    ctx.font = `800 ${Math.round(12 * s)}px sans-serif`;
+    ctx.textAlign = 'right';
+    ctx.fillText(ammo < 0 ? '∞' : String(ammo), x + sw - 8, y + sh / 2 + 4);
+    touch.weaponHit.push({ x, y, w: sw, h: sh, i });
+    x += sw + gap;
+  }
+  ctx.textAlign = 'left';
 }
 
 function drawMinimap() {
@@ -1640,14 +1941,34 @@ requestAnimationFrame(frame);
 $('lanUrl').textContent = location.host;
 $('name').value = localStorage.getItem('nm_name') || '';
 
+function goImmersive() {
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+  const lock = () => { try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {}); } catch (e) {} };
+  if (req) { try { const p = req.call(el); if (p && p.then) p.then(lock).catch(lock); else lock(); } catch (e) { lock(); } }
+  else lock();
+}
+
 function deploy() {
   AU.init();
   const name = $('name').value.trim() || 'PLAYER';
   localStorage.setItem('nm_name', name);
+  if (touch.enabled) goImmersive();
   connect(name);
 }
 $('deploy').addEventListener('click', deploy);
 $('name').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') deploy(); ev.stopPropagation(); });
+
+/* touch setup: swap menu hints, reveal touch settings, wire toggles */
+if (touch.enabled) {
+  document.body.classList.add('touch');
+  const ts = $('touchSettings');
+  if (ts) ts.classList.remove('hidden');
+  const afc = $('optAutoFire'), lhc = $('optLefty'), tsz = $('optTouchSize');
+  if (afc) { afc.checked = touch.autoFire; afc.addEventListener('change', () => { touch.autoFire = afc.checked; localStorage.setItem('nm_autofire', afc.checked ? '1' : '0'); }); }
+  if (lhc) { lhc.checked = touch.lefty; lhc.addEventListener('change', () => { touch.lefty = lhc.checked; localStorage.setItem('nm_lefty', lhc.checked ? '1' : '0'); }); }
+  if (tsz) { tsz.value = String(Math.round(touch.scale * 100)); tsz.addEventListener('input', () => { touch.scale = clampNum(parseFloat(tsz.value) / 100, 0.75, 1.4, 1); localStorage.setItem('nm_tscale', String(touch.scale)); }); }
+}
 
 $('resume').addEventListener('click', () => toggleEsc());
 $('leave').addEventListener('click', () => { if (ws) ws.close(); toggleEsc(); });
